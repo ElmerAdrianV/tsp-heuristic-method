@@ -9,6 +9,11 @@ recibiendo como argumentos la matriz de distancias.
 import random
 import numpy as np
 import networkx as nx
+import time
+import csv
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+import os
 
 def nearest_neighbor_solution(distance_matrix, start_city=0):
     n = len(distance_matrix)
@@ -31,63 +36,94 @@ def nearest_neighbor_solution(distance_matrix, start_city=0):
 def calculate_total_distance(route, distance_matrix):
     return sum(distance_matrix[route[i]][route[i + 1]] for i in range(len(route) - 1))
 
-def lin_kernighan_improvement(route, distance_matrix):
-    best_route = route
-    best_distance = calculate_total_distance(route, distance_matrix)
-    improved = True
+def two_opt_swap(route, i, j):
+    return route[:i] + route[i:j+1][::-1] + route[j+1:]
 
-    while improved:
-        improved = False
-        for i in range(1, len(route) - 2):
-            for j in range(i + 1, len(route) - 1):
-                new_route = route[:i] + route[i:j+1][::-1] + route[j+1:]
+def double_bridge_perturbation(route):
+    n = len(route)
+    p1, p2, p3, p4 = sorted(random.sample(range(1, n - 1), 4))
+    return route[:p1] + route[p3:p4] + route[p2:p3] + route[p1:p2] + route[p4:]
+
+def lin_kernighan_with_unstuck_refined(distance_matrix, start_city=0, max_iterations=1000, max_no_improvement=10):
+    n = len(distance_matrix)
+    route = [0] + random.sample(range(1, n), n - 1) + [0]
+    best_route = route
+    best_distance = calculate_total_distance(best_route, distance_matrix)
+    print("Initial distance:", best_distance)
+
+    no_improvement_count = 0
+    perturbation_applied = False  # Track if perturbation has already been applied
+
+    for iteration in range(max_iterations):
+        improvement = False
+
+        # 2-opt swaps
+        for i in range(1, n - 1):
+            for j in range(i + 1, n):
+                new_route = two_opt_swap(route, i, j)
                 new_distance = calculate_total_distance(new_route, distance_matrix)
+
                 if new_distance < best_distance:
                     best_route = new_route
                     best_distance = new_distance
-                    improved = True
+                    improvement = True
+                    no_improvement_count = 0
+                    perturbation_applied = False
+
+        if improvement:
+            route = best_route
+        else:
+            no_improvement_count += 1
+            
+            if not perturbation_applied:
+                route = double_bridge_perturbation(best_route)
+                perturbation_applied = True
+            else:
+                route = new_route 
+            no_improvement_count = 0
+
+        # Break if no improvement after perturbation and max iterations reached
+        if perturbation_applied and no_improvement_count >= max_no_improvement:
+            break
 
     return best_route, best_distance
 
-def perturb_tour(route):
-    # Choose a random segment [i, j]
-    i, j = sorted(random.sample(range(1, len(route) - 1), 2))
+def lin_kernighan(distance_matrix, start_city=0, max_iterations=1000, track_convergence=False):
+    n = len(distance_matrix)
+    route = [start_city] + random.sample(range(1, n), n - 1) + [start_city]
+    best_route = route
+    best_distance = calculate_total_distance(best_route, distance_matrix)
+    print("Initial distance:", best_distance)
 
-    segment = route[i:j+1]
+    convergence = []  # List to track the best distance at each iteration
 
-    if random.choice([True, False]):
-        segment = segment[::-1]
-    
-    new_route = route[:i] + route[j+1:] # Remove the segment from the route
+    for iteration in range(max_iterations):
+        improvement = False
 
-    # Randomly choose a position to reinsert the segment
-    insert_position = random.randint(1, len(new_route) - 1)
-    perturbed_route = new_route[:insert_position] + segment + new_route[insert_position:]
+        # 2-opt swaps
+        for i in range(1, n - 1):
+            for j in range(i + 1, n):
+                new_route = two_opt_swap(route, i, j)
+                new_distance = calculate_total_distance(new_route, distance_matrix)
 
-    return perturbed_route
+                if new_distance < best_distance:
+                    best_route = new_route
+                    best_distance = new_distance
+                    improvement = True
+                    print(f"Iteration {iteration}: Improved distance: {best_distance}")
 
-def chained_lin_kernighan(distance_matrix, start_city=0, iterations=10):
-    current_route, _ = nearest_neighbor_solution(distance_matrix, start_city=start_city)
-    improved_route, improved_distance = lin_kernighan_improvement(current_route, distance_matrix)
-    
-    # Initialize the best route and distance
-    best_route = improved_route
-    best_distance = improved_distance
+        if track_convergence:
+            convergence.append(best_distance)
 
-    for _ in range(iterations):
-        # Perturb the current best route
-        perturbed_route = perturb_tour(improved_route)
+        if improvement:
+            route = best_route
+        else:
+            print(f"Iteration {iteration}: No improvement.")
+            break  # Exit if no improvement is found
 
-        # Apply Lin-Kernighan improvements to the perturbed route
-        improved_route, improved_distance = lin_kernighan_improvement(perturbed_route, distance_matrix)
-
-        # Update the best route if the new improved route is better
-        if improved_distance < best_distance:
-            best_route = improved_route
-            best_distance = improved_distance
-
+    if track_convergence:
+        return best_route, best_distance, convergence
     return best_route, best_distance
-
 
 def christofides_algorithm(distance_matrix, start_city=0):
     n = len(distance_matrix)
@@ -133,21 +169,133 @@ def christofides_algorithm(distance_matrix, start_city=0):
 
     return tour, total_distance
 
-if __name__ == '__main__':
-    # Ejemplo de uso
-    distance_matrix = [
-        [0, 10, 15, 20],
-        [10, 0, 35, 25],
-        [15, 35, 0, 30],
-        [20, 25, 30, 0]
-    ]
+def load_coordinates(file_path):
+    # Use numpy to load only the x and y coordinates (columns 1 and 2, zero-indexed)
+    return np.loadtxt(file_path, delimiter=' ', usecols=(1, 2))
 
-    final_route, final_distance = chained_lin_kernighan(distance_matrix, iterations=20)
-    print("Ruta final con Chained Lin-Kernighan:", final_route)
-    print("Distancia total con Chained Lin-Kernighan:", final_distance)
 
+def save_convergence_data(convergence, file_path):
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+    with open(file_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Iteration', 'Best Distance'])
+        writer.writerows(enumerate(convergence))
+
+def create_route_gif(route, coordinates, output_path):
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, ax = plt.subplots()
+
+    def update(frame):
+        ax.clear()
+        ordered_coords = coordinates[route[:frame + 1]]
+        ax.plot(ordered_coords[:, 0], ordered_coords[:, 1], 'o-')
+        ax.set_title(f"Step {frame + 1}")
     
-    tour, total_distance = christofides_algorithm(distance_matrix)
+    # Total duration for the GIF
+    total_duration = 10_000  # 10 seconds in milliseconds
+    frames = len(route)  # Number of frames
+    interval = total_duration / frames  # Milliseconds per frame
 
-    print("Ruta final con Christofides Algorithm:", tour)
-    print("Distancia total con Christofides Algorithm:", total_distance)
+    ani = FuncAnimation(fig, update, frames=frames, interval=interval)
+    ani.save(output_path, writer='imagemagick')
+
+if __name__ == '__main__':
+    # Experiment configuration
+    files = ["Qatar", "Uruguay", "Zimbabwe"]
+    raw_path = "data/raw/"
+    matrix_path = "data/distance_matrix/"
+    start_city = 0
+    iterations = 1000
+    subsets = [10, 50, 100, 194]  # Number of cities to test
+
+    algorithms = {
+        "Lin-Kernighan": lin_kernighan,
+        "Christofides": christofides_algorithm
+    }
+
+    summary_results = []
+    best_routes = []  # To store best route details
+
+    for file in files:
+        try:
+            # Load city coordinates
+            coordinates = load_coordinates(os.path.join(raw_path, f"{file}.txt"))
+            total_cities = len(coordinates)
+            print(f"Loaded coordinates for {file}: {total_cities} cities")
+
+            # Ensure subsets do not exceed the total number of cities
+            subsets_to_test = [s for s in subsets if s <= total_cities]
+
+            # Load pre-generated distance matrix
+            distance_matrix = np.genfromtxt(os.path.join(matrix_path, f"{file}_distances.csv"), delimiter=',')
+            if np.isnan(distance_matrix).any():
+                raise ValueError(f"Distance matrix in {file} contains invalid data.")
+
+            for num_cities in subsets_to_test:
+                subset_coords = coordinates[:num_cities]
+                subset_matrix = distance_matrix[:num_cities, :num_cities]
+
+                print(f"Processing {num_cities} cities for {file}")
+
+                for name, algorithm in algorithms.items():
+                    start_time = time.time()
+
+                    if name == "Lin-Kernighan":
+                        route, distance, convergence = algorithm(
+                            subset_matrix, 
+                            start_city=start_city, 
+                            max_iterations=iterations,
+                            track_convergence=True
+                        )
+                        save_convergence_data(
+                            convergence, 
+                            f"data/convergence/{file}_{name}_{num_cities}_convergence.csv"
+                        )
+                    else:
+                        route, distance = algorithm(subset_matrix, start_city=start_city)
+
+                    runtime = time.time() - start_time
+                    summary_results.append([file, num_cities, name, distance, runtime])
+                    best_routes.append({
+                        'File': file,
+                        'Num Cities': num_cities,
+                        'Algorithm': name,
+                        'Distance': distance,
+                        'Route': route
+                    })
+
+                    print(f"{name} ({num_cities} cities) on {file}: Distance = {distance}, Runtime = {runtime:.2f}s")
+
+                    create_route_gif(
+                        route, 
+                        subset_coords, 
+                        f"data/gifs/{file}_{name}_{num_cities}_route.gif"
+                    )
+
+        except Exception as e:
+            print(f"Error processing {file}: {e}")
+
+    # Save summary results
+    summary_csv_path = "data/summary/results_summary.csv"
+    with open(summary_csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['File', 'Num Cities', 'Algorithm', 'Final Distance', 'Runtime'])
+        writer.writerows(summary_results)
+    print(f"Summary results saved to {summary_csv_path}")
+
+    # Save best routes
+    best_routes_csv_path = "data/summary/best_routes.csv"
+    with open(best_routes_csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['File', 'Num Cities', 'Algorithm', 'Distance', 'Route'])
+        for route_info in best_routes:
+            writer.writerow([
+                route_info['File'], 
+                route_info['Num Cities'], 
+                route_info['Algorithm'], 
+                route_info['Distance'], 
+                ','.join(map(str, route_info['Route']))
+            ])
+    print(f"Best routes saved to {best_routes_csv_path}")
